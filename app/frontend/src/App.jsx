@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const C = {
@@ -332,12 +333,180 @@ function CustomersSection() {
   );
 }
 
+// ── Genie Chat Widget ─────────────────────────────────────────────────────────
+const PREFILLED = [
+  "What are the top 10 customers by total order value?",
+  "Show revenue trend by month for the last year",
+  "Which order priorities have the highest average total price?",
+  "What are the top 5 nations by number of orders?",
+  "Show me orders with status 'F' and their total value",
+];
+
+function GenieChat() {
+  const [open, setOpen]           = useState(false);
+  const [expanded, setExpanded]   = useState(false);
+  const [messages, setMessages]   = useState([]);
+  const [input, setInput]         = useState('');
+  const [loading, setLoading]     = useState(false);
+  const [convId, setConvId]       = useState(null);
+  const bottomRef                 = useRef(null);
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  const send = useCallback(async (text) => {
+    const q = text || input.trim();
+    if (!q) return;
+    setMessages(m => [...m, { role: 'user', text: q }]);
+    setInput('');
+    setLoading(true);
+    try {
+      const res = await api('/api/genie/message', {
+        method: 'POST',
+        body: JSON.stringify({ question: q, conversation_id: convId }),
+      });
+      setConvId(res.conversation_id);
+      setMessages(m => [...m, { role: 'genie', text: res.answer }]);
+    } catch (e) {
+      setMessages(m => [...m, { role: 'error', text: e.message }]);
+    } finally { setLoading(false); }
+  }, [input, convId]);
+
+  const panelW = expanded ? '100vw' : 420;
+  const panelH = expanded ? '100vh' : 520;
+  const panelStyle = {
+    position: 'fixed', bottom: expanded ? 0 : 90, right: expanded ? 0 : 24,
+    width: panelW, height: panelH, zIndex: 1000,
+    background: '#fff', borderRadius: expanded ? 0 : 16,
+    boxShadow: '0 8px 40px rgba(0,0,0,0.18)',
+    display: 'flex', flexDirection: 'column',
+    border: `1px solid ${C.border}`,
+    overflow: 'hidden',
+    transition: 'all 0.25s ease',
+  };
+
+  return (
+    <>
+      {/* Floating button */}
+      {!open && (
+        <button onClick={() => setOpen(true)} style={{
+          position: 'fixed', bottom: 28, right: 28, zIndex: 999,
+          background: 'linear-gradient(135deg, #FF3621 0%, #FF6B35 100%)',
+          color: '#fff', border: 'none', borderRadius: 50,
+          padding: '14px 22px', fontSize: 15, fontWeight: 700,
+          cursor: 'pointer', boxShadow: '0 4px 20px rgba(255,54,33,0.45)',
+          display: 'flex', alignItems: 'center', gap: 8,
+          letterSpacing: 0.3,
+        }}>
+          <span style={{ fontSize: 20 }}>✦</span> Ask Genie
+        </button>
+      )}
+
+      {/* Chat panel */}
+      {open && (
+        <div style={panelStyle}>
+          {/* Header */}
+          <div style={{
+            background: 'linear-gradient(135deg, #1B3139 0%, #2D5A6B 100%)',
+            padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 10,
+          }}>
+            <span style={{ fontSize: 22 }}>✦</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ color: '#fff', fontWeight: 700, fontSize: 15 }}>Ask Genie</div>
+              <div style={{ color: '#94A3B8', fontSize: 11 }}>TPC-H Analytics · AI/BI Genie</div>
+            </div>
+            <button onClick={() => setExpanded(e => !e)} title={expanded ? 'Collapse' : 'Expand'} style={{
+              background: 'rgba(255,255,255,0.12)', border: 'none', color: '#fff',
+              borderRadius: 6, padding: '4px 8px', cursor: 'pointer', fontSize: 14,
+            }}>{expanded ? '⊡' : '⛶'}</button>
+            <button onClick={() => { setOpen(false); setExpanded(false); }} style={{
+              background: 'rgba(255,255,255,0.12)', border: 'none', color: '#fff',
+              borderRadius: 6, padding: '4px 8px', cursor: 'pointer', fontSize: 16,
+            }}>✕</button>
+          </div>
+
+          {/* Messages */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {messages.length === 0 && (
+              <div>
+                <p style={{ color: C.dbGray, fontSize: 13, margin: '0 0 12px' }}>
+                  Ask anything about TPC-H orders, customers, suppliers, or revenue.
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {PREFILLED.map((q, i) => (
+                    <button key={i} onClick={() => send(q)} style={{
+                      textAlign: 'left', background: C.bg, border: `1px solid ${C.border}`,
+                      borderRadius: 8, padding: '8px 12px', fontSize: 12, cursor: 'pointer',
+                      color: C.dbNavy, lineHeight: 1.4,
+                    }}>{q}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {messages.map((m, i) => (
+              <div key={i} style={{
+                alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+                maxWidth: '85%',
+              }}>
+                <div style={{
+                  background: m.role === 'user' ? '#1B3139' : m.role === 'error' ? '#FEF2F2' : C.bg,
+                  color: m.role === 'user' ? '#fff' : m.role === 'error' ? C.dbRed : '#111',
+                  borderRadius: m.role === 'user' ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                  padding: '9px 13px', fontSize: 13, lineHeight: 1.6,
+                  border: m.role === 'genie' ? `1px solid ${C.border}` : 'none',
+                }}>
+                  {m.role === 'genie'
+                    ? <ReactMarkdown components={{
+                        p:      ({children}) => <p style={{margin:'4px 0'}}>{children}</p>,
+                        strong: ({children}) => <strong style={{fontWeight:700}}>{children}</strong>,
+                        ul:     ({children}) => <ul style={{margin:'4px 0',paddingLeft:18}}>{children}</ul>,
+                        ol:     ({children}) => <ol style={{margin:'4px 0',paddingLeft:18}}>{children}</ol>,
+                        li:     ({children}) => <li style={{margin:'2px 0'}}>{children}</li>,
+                        table:  ({children}) => <table style={{borderCollapse:'collapse',width:'100%',margin:'6px 0',fontSize:12}}>{children}</table>,
+                        th:     ({children}) => <th style={{background:'#1B3139',color:'#fff',padding:'5px 8px',textAlign:'left',fontWeight:600}}>{children}</th>,
+                        td:     ({children}) => <td style={{padding:'4px 8px',borderBottom:`1px solid ${C.border}`}}>{children}</td>,
+                        code:   ({children}) => <code style={{background:'#E5E7EB',borderRadius:3,padding:'1px 4px',fontSize:11,fontFamily:'monospace'}}>{children}</code>,
+                        h1:     ({children}) => <h3 style={{margin:'6px 0 2px',fontSize:14,color:C.dbNavy}}>{children}</h3>,
+                        h2:     ({children}) => <h4 style={{margin:'6px 0 2px',fontSize:13,color:C.dbNavy}}>{children}</h4>,
+                        h3:     ({children}) => <h4 style={{margin:'4px 0 2px',fontSize:13,color:C.dbNavy}}>{children}</h4>,
+                      }}>{m.text}</ReactMarkdown>
+                    : m.text}
+                </div>
+              </div>
+            ))}
+            {loading && (
+              <div style={{ alignSelf: 'flex-start', color: C.dbGray, fontSize: 13, padding: '4px 8px' }}>
+                Genie is thinking…
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </div>
+
+          {/* Input */}
+          <div style={{ borderTop: `1px solid ${C.border}`, padding: '10px 12px', display: 'flex', gap: 8 }}>
+            <input
+              value={input} onChange={e => setInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !e.shiftKey && send()}
+              placeholder="Ask about TPC-H data…"
+              style={{ flex: 1, padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, outline: 'none' }}
+            />
+            <button onClick={() => send()} disabled={loading} style={{
+              background: loading ? '#E5E7EB' : 'linear-gradient(135deg, #FF3621, #FF6B35)',
+              color: loading ? C.dbGray : '#fff', border: 'none', borderRadius: 8,
+              padding: '9px 16px', cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13,
+            }}>Send</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ── App root ──────────────────────────────────────────────────────────────────
 export default function App() {
   return (
     <div style={S.page}>
       <div style={S.header}>
-        <h1 style={S.h1}>Delta ↔ Lakebase Integration Demo</h1>
+        <h1 style={S.h1}>LakeSync</h1>
         <p style={{ margin: '6px 0 0', color: C.dbGray, fontSize: 14 }}>
           Full CRUD on Lakebase Postgres · Synced tables from Delta · Forward ETL every 15 min
         </p>
@@ -345,6 +514,7 @@ export default function App() {
       <ArchBanner />
       <OrdersSection />
       <CustomersSection />
+      <GenieChat />
     </div>
   );
 }

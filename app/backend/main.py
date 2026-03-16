@@ -263,6 +263,41 @@ def health():
     return {"status": "ok"}
 
 
+# ── Genie ─────────────────────────────────────────────────────────────────────
+
+class GenieRequest(BaseModel):
+    question: str
+    conversation_id: Optional[str] = None
+
+@app.post("/api/genie/message")
+def genie_message(req: GenieRequest):
+    space_id = os.environ.get("GENIE_SPACE_ID", "")
+    if not space_id:
+        raise HTTPException(status_code=503, detail="GENIE_SPACE_ID not configured")
+    w = WorkspaceClient()
+    try:
+        if req.conversation_id:
+            msg = w.genie.create_message_and_wait(space_id, req.conversation_id, req.question)
+        else:
+            msg = w.genie.start_conversation_and_wait(space_id, req.question)
+        text = ""
+        if msg.attachments:
+            for att in msg.attachments:
+                if att.text and att.text.content:
+                    text += att.text.content + "\n"
+                elif att.query and att.query.description:
+                    text += att.query.description + "\n"
+        if not text and msg.content:
+            text = msg.content
+        return {
+            "answer": text.strip() or "No response",
+            "conversation_id": msg.conversation_id,
+            "message_id": msg.id,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Serve React static build ──────────────────────────────────────────────────
 import os as _os
 _static = _os.path.join(_os.path.dirname(__file__), "..", "frontend", "build")

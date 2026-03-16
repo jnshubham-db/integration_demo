@@ -25,6 +25,10 @@ from databricks.sdk.service.apps import (
     AppResource,
     AppResourceDatabase,
     AppResourceDatabaseDatabasePermission,
+    AppResourceGenieSpace,
+    AppResourceGenieSpaceGenieSpacePermission,
+    AppResourceSqlWarehouse,
+    AppResourceSqlWarehouseSqlWarehousePermission,
     ComputeState,
     EnvVar,
 )
@@ -45,6 +49,12 @@ with open(config_path) as f:
 pg_host       = cfg["pg_host"]
 database_id   = cfg["database_id"]
 instance_name = cfg["instance_name"]
+
+genie_space_id = ""
+genie_path = HERE.parent / "genie_config.json"
+if genie_path.exists():
+    with open(genie_path) as f:
+        genie_space_id = json.load(f).get("genie_space_id", "")
 
 w = WorkspaceClient(profile="DEFAULT")
 me = w.current_user.me()
@@ -71,6 +81,14 @@ print("  Build succeeded.")
 
 # --- Step 2: Upload files to Workspace ----------------------------------------
 print("\n[2/4] Uploading files to Workspace...")
+
+# Clean stale JS bundles to prevent file conflict errors on re-deploy
+_js_dir = f"{WORKSPACE_APP_PATH}/frontend/build/static/js"
+try:
+    for _f in (w.workspace.list(path=_js_dir) or []):
+        w.workspace.delete(path=_f.path)
+except Exception:
+    pass
 
 def upload_file(local_path: Path, workspace_path: str):
     """Upload a single file to Databricks Workspace."""
@@ -143,18 +161,58 @@ database_resource = AppResource(
     ),
 )
 
+DEFAULT_WAREHOUSE_ID = "148ccb90800933a1"  # Shared Endpoint
+
+print("\nAvailable SQL warehouses:")
+warehouses = list(w.warehouses.list())
+for i, wh in enumerate(warehouses):
+    marker = " (default)" if wh.id == DEFAULT_WAREHOUSE_ID else ""
+    print(f"  [{i}] {wh.name:<40} id={wh.id}{marker}")
+wh_choice = input(f"\nWarehouse for Genie [press Enter for default {DEFAULT_WAREHOUSE_ID}]: ").strip()
+if wh_choice.isdigit() and int(wh_choice) < len(warehouses):
+    genie_warehouse_id = warehouses[int(wh_choice)].id
+elif wh_choice:
+    genie_warehouse_id = wh_choice
+else:
+    genie_warehouse_id = DEFAULT_WAREHOUSE_ID
+print(f"  Using warehouse: {genie_warehouse_id}")
+
+genie_resource = AppResource(
+    name="tpch-genie",
+    genie_space=AppResourceGenieSpace(
+        name="tpch-genie",
+        space_id=genie_space_id,
+        permission=AppResourceGenieSpaceGenieSpacePermission.CAN_RUN,
+    ),
+) if genie_space_id else None
+
+warehouse_resource = AppResource(
+    name="genie-warehouse",
+    sql_warehouse=AppResourceSqlWarehouse(
+        id=genie_warehouse_id,
+        permission=AppResourceSqlWarehouseSqlWarehousePermission.CAN_MANAGE,
+    ),
+)
+
+app_resources = [r for r in [database_resource, genie_resource, warehouse_resource] if r]
 try:
     w.apps.create(
         app=App(
             name=APP_NAME,
-            description="TPC-H Orders Demo: Delta ↔ Lakebase integration",
-            resources=[database_resource],
+            description="LakeSync — Delta ↔ Lakebase integration",
+            resources=app_resources,
         )
     )
     print(f"  App '{APP_NAME}' created.")
 except Exception as e:
     if "already exists" in str(e).lower():
         print(f"  App '{APP_NAME}' already exists, will redeploy.")
+        w.apps.update(name=APP_NAME, app=App(
+            name=APP_NAME,
+            description="LakeSync — Delta ↔ Lakebase integration",
+            resources=app_resources,
+        ))
+        print(f"  Updated app resources.")
     else:
         raise
 
@@ -176,6 +234,21 @@ for _ in range(60):
         break
     time.sleep(10)
 
+# --- Step 3b: Grant catalog permissions to app SP ----------------------------
+app_sp_client_id = w.apps.get(name=APP_NAME).service_principal_client_id
+print(f"  Granting UC permissions to app SP: {app_sp_client_id}")
+catalog_grants = [
+    f"GRANT USE CATALOG ON CATALOG integration_demo TO `{app_sp_client_id}`",
+    f"GRANT USE SCHEMA ON SCHEMA integration_demo.tpch TO `{app_sp_client_id}`",
+    f"GRANT SELECT ON SCHEMA integration_demo.tpch TO `{app_sp_client_id}`",
+]
+from databricks.sdk.service.sql import StatementState as _SS
+for _sql in catalog_grants:
+    _r = w.statement_execution.execute_statement(statement=_sql, warehouse_id=genie_warehouse_id, wait_timeout='30s')
+    if _r.status.state == _SS.FAILED:
+        print(f"  Warning: {_sql[:60]} | {_r.status.error.message[:80]}")
+print("  UC grants applied.")
+
 # --- Step 4: Deploy -----------------------------------------------------------
 print("\n[4/4] Deploying app (SNAPSHOT mode)...")
 
@@ -188,6 +261,7 @@ deployment = w.apps.deploy(
             EnvVar(name="LAKEBASE_HOST",     value=pg_host),
             EnvVar(name="LAKEBASE_DB",       value=database_id),
             EnvVar(name="LAKEBASE_INSTANCE", value=instance_name),
+            EnvVar(name="GENIE_SPACE_ID",    value=genie_space_id),
         ],
     ),
 ).result()
