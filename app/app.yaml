@@ -1,0 +1,16 @@
+command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+resources:
+  - name: lakebase-tpch
+    description: "Lakebase for TPC-H demo"
+    database:
+      instance: "integration-demo"
+      permission: CAN_CONNECT_AND_CREATE
+
+env:
+  - name: LAKEBASE_HOST
+    value: ""  # set by deploy_app.py at deploy time
+  - name: LAKEBASE_DB
+    value: "tpch_sync"
+  - name: LAKEBASE_INSTANCE
+    value: "integration-demo"

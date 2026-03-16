@@ -1,0 +1,7 @@
+node_modules/
+build/
+__pycache__/
+*.pyc
+.env
+.claude/
+lakebase_config.json
