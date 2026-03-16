@@ -59,11 +59,11 @@ function ArchBanner() {
       <div style={S.archTitle}>How this app works</div>
       <div style={S.flow}>
         <div style={{ ...S.box, background: '#EFF6FF', borderColor: '#BFDBFE' }}>Delta Table<br/><small style={{color:C.dbGray}}>integration_demo.tpch.orders</small></div>
-        <span style={S.arrow}>⟶ Synced Table ⟶</span>
+        <span style={S.arrow}>⟶ Reverse ETL (Sync Table) ⟶</span>
         <div style={{ ...S.box, background: '#F0FDF4', borderColor: '#BBF7D0' }}>Lakebase (read-only)<br/><small style={{color:C.dbGray}}>tpch_sync.customer</small></div>
         <span style={{color:C.dbGray, fontSize:12}}>|</span>
         <div style={{ ...S.box, background: '#FFF7ED', borderColor: '#FED7AA' }}>Lakebase (writable)<br/><small style={{color:C.dbGray}}>tpch.orders_staging</small></div>
-        <span style={S.arrow}>⟶ Scheduled Job (15 min) ⟶</span>
+        <span style={S.arrow}>⟶ Forward ETL (15 min) ⟶</span>
         <div style={{ ...S.box, background: '#EFF6FF', borderColor: '#BFDBFE' }}>Delta Table<br/><small style={{color:C.dbGray}}>integration_demo.tpch.orders</small></div>
       </div>
       <div style={{ marginTop: 10, fontSize: 12, color: C.dbGray }}>

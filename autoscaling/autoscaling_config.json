@@ -1,0 +1,11 @@
+{
+  "pg_host": "ep-misty-glitter-e13zvc2d.database.eastus2.azuredatabricks.net",
+  "project_id": "integration-demo-as",
+  "branch_id": "main",
+  "database_id": "tpch-as",
+  "endpoint_id": "primary",
+  "endpoint_path": "projects/integration-demo-as/branches/main/endpoints/primary",
+  "uc_catalog": "integration_demo",
+  "uc_schema": "tpch_sync_as",
+  "backend": "autoscaling"
+}

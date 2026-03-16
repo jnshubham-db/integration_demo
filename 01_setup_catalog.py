@@ -1,15 +1,43 @@
 """
 Script 1: Setup catalog and copy TPC-H data
 Creates integration_demo catalog + tpch schema, copies 8 TPC-H tables from samples.tpch.
+
+Usage:
+  python3 01_setup_catalog.py                        # prompts for warehouse ID
+  python3 01_setup_catalog.py --warehouse-id <id>    # pass directly
 """
 
+import argparse
 import time
+
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementState
 
 w = WorkspaceClient(profile="DEFAULT")
-warehouse_id = next(w.warehouses.list()).id
-print(f"Using warehouse: {warehouse_id}")
+
+# --- Warehouse ID: CLI arg → env → prompt ---
+parser = argparse.ArgumentParser(description="Setup integration_demo catalog with TPC-H data.")
+parser.add_argument("--warehouse-id", default=None, help="SQL warehouse ID to run statements")
+args = parser.parse_args()
+
+if args.warehouse_id:
+    warehouse_id = args.warehouse_id
+    print(f"Using warehouse (from --warehouse-id): {warehouse_id}")
+else:
+    # List available warehouses and let user choose
+    warehouses = list(w.warehouses.list())
+    print("\nAvailable SQL warehouses:")
+    for i, wh in enumerate(warehouses):
+        print(f"  [{i}] {wh.id}  {wh.name}  ({wh.state.value if wh.state else 'unknown'})")
+    print()
+    choice = input(f"Enter warehouse ID directly, or index [0-{len(warehouses)-1}] (default=0): ").strip()
+    if not choice:
+        warehouse_id = warehouses[0].id
+    elif choice.isdigit() and int(choice) < len(warehouses):
+        warehouse_id = warehouses[int(choice)].id
+    else:
+        warehouse_id = choice
+    print(f"Using warehouse: {warehouse_id}")
 
 
 def run_sql(sql, poll_on_running=True):
@@ -18,7 +46,7 @@ def run_sql(sql, poll_on_running=True):
     )
     # Poll if RUNNING (large tables like lineitem may exceed 50s)
     while poll_on_running and resp.status.state == StatementState.RUNNING:
-        print(f"  Still running... polling in 5s")
+        print("  Still running... polling in 5s")
         time.sleep(5)
         resp = w.statement_execution.get_statement(resp.statement_id)
     if resp.status.state == StatementState.FAILED:
@@ -27,7 +55,7 @@ def run_sql(sql, poll_on_running=True):
 
 
 # --- Create catalog (idempotent) ---
-print("Creating catalog: integration_demo")
+print("\nCreating catalog: integration_demo")
 try:
     w.catalogs.create(name="integration_demo")
     print("  Created.")
@@ -54,6 +82,6 @@ TABLES = ["lineitem", "orders", "customer", "part", "supplier", "partsupp", "nat
 for t in TABLES:
     print(f"Cloning samples.tpch.{t} → integration_demo.tpch.{t} ...")
     run_sql(f"CREATE TABLE IF NOT EXISTS integration_demo.tpch.{t} DEEP CLONE samples.tpch.{t}")
-    print(f"  Done.")
+    print("  Done.")
 
 print("\n✓ Setup complete: integration_demo.tpch has 8 TPC-H tables.")
