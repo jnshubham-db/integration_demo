@@ -1,6 +1,8 @@
 """
 Script 5 (Autoscaling): Forward ETL job
-Reads tpch.orders_staging from Lakebase Autoscaling and MERGEs into Delta.
+Reads CDC log from tpch.orders_staging in Lakebase Autoscaling,
+deduplicates by o_orderkey (latest cdc_id wins), and performs a
+three-way MERGE into Delta (INSERT/UPDATE/DELETE).
 Uses w.postgres.generate_database_credential(endpoint=...) for auth.
 
 Scheduled every 15 minutes.
@@ -53,18 +55,43 @@ conn = psycopg2.connect(
 conn.autocommit = True
 
 # COMMAND ----------
+# Step 1: Capture checkpoint — max cdc_id at start of run
+with conn.cursor() as cur:
+    cur.execute("SELECT COALESCE(MAX(cdc_id), 0) FROM tpch.orders_staging")
+    max_cdc_id = cur.fetchone()[0]
+
+if max_cdc_id == 0:
+    conn.close()
+    print("No CDC records to process, exiting.")
+    dbutils.notebook.exit("no_rows")
+
+print(f"Processing CDC records up to cdc_id={{max_cdc_id}}")
+
+# COMMAND ----------
+# Step 2: Read deduplicated CDC log — latest operation per o_orderkey
 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-    cur.execute("SELECT * FROM tpch.orders_staging")
+    cur.execute("""
+        SELECT o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate,
+               o_orderpriority, o_clerk, o_shippriority, o_comment, _operation
+        FROM (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY o_orderkey ORDER BY cdc_id DESC) AS rn
+            FROM tpch.orders_staging
+            WHERE cdc_id <= %s
+        ) sub
+        WHERE rn = 1
+    """, (max_cdc_id,))
     rows = cur.fetchall()
-conn.close()
-print(f"Fetched {{len(rows)}} rows from Lakebase Autoscaling orders_staging")
+
+print(f"Fetched {{len(rows)}} deduplicated CDC records from Lakebase Autoscaling")
 
 # COMMAND ----------
 if len(rows) == 0:
-    print("No rows to merge, exiting.")
+    conn.close()
+    print("No rows after deduplication, exiting.")
     dbutils.notebook.exit("no_rows")
 
 # COMMAND ----------
+# Step 3: Build Spark DataFrame with _operation column
 from pyspark.sql import SparkSession
 from pyspark.sql.types import (
     StructType, StructField, LongType, StringType,
@@ -83,27 +110,34 @@ schema = StructType([
     StructField("o_clerk",         StringType(),      True),
     StructField("o_shippriority",  IntegerType(),     True),
     StructField("o_comment",       StringType(),      True),
+    StructField("_operation",      StringType(),      False),
 ])
 
 rdd_data = [
-    (int(r["o_orderkey"]), int(r["o_custkey"]) if r["o_custkey"] else None,
+    (int(r["o_orderkey"]),
+     int(r["o_custkey"]) if r["o_custkey"] else None,
      str(r["o_orderstatus"]) if r["o_orderstatus"] else None,
      r["o_totalprice"], r["o_orderdate"], r["o_orderpriority"],
-     r["o_clerk"], int(r["o_shippriority"]) if r["o_shippriority"] is not None else None,
-     r["o_comment"])
+     r["o_clerk"],
+     int(r["o_shippriority"]) if r["o_shippriority"] is not None else None,
+     r["o_comment"],
+     r["_operation"])
     for r in rows
 ]
 
 df = spark.createDataFrame(rdd_data, schema=schema)
 df.createOrReplaceTempView("orders_staging_view")
 print(f"Spark view created with {{df.count()}} rows")
+df.groupBy("_operation").count().show()
 
 # COMMAND ----------
+# Step 4: Three-way MERGE — handles INSERT, UPDATE, and DELETE operations
 spark.sql("""
 MERGE INTO integration_demo.tpch.orders AS target
 USING orders_staging_view AS source
 ON target.o_orderkey = source.o_orderkey
-WHEN MATCHED THEN UPDATE SET
+WHEN MATCHED AND source._operation = 'DELETE' THEN DELETE
+WHEN MATCHED AND source._operation IN ('UPDATE', 'INSERT') THEN UPDATE SET
     target.o_custkey       = source.o_custkey,
     target.o_orderstatus   = source.o_orderstatus,
     target.o_totalprice    = source.o_totalprice,
@@ -112,7 +146,7 @@ WHEN MATCHED THEN UPDATE SET
     target.o_clerk         = source.o_clerk,
     target.o_shippriority  = source.o_shippriority,
     target.o_comment       = source.o_comment
-WHEN NOT MATCHED THEN INSERT (
+WHEN NOT MATCHED AND source._operation IN ('INSERT', 'UPDATE') THEN INSERT (
     o_orderkey, o_custkey, o_orderstatus, o_totalprice,
     o_orderdate, o_orderpriority, o_clerk, o_shippriority, o_comment
 ) VALUES (
@@ -120,7 +154,22 @@ WHEN NOT MATCHED THEN INSERT (
     source.o_orderdate, source.o_orderpriority, source.o_clerk, source.o_shippriority, source.o_comment
 )
 """).show()
-print("MERGE complete — Lakebase Autoscaling → Delta!")
+print("MERGE complete — Lakebase Autoscaling CDC → Delta!")
+
+# COMMAND ----------
+# Step 5: Clean up processed CDC records (bounded by checkpoint)
+cred2 = w.postgres.generate_database_credential(endpoint=ENDPOINT_PATH)
+pg_user2 = w.current_user.me().user_name
+conn2 = psycopg2.connect(
+    host=PG_HOST, port=5432, dbname=PG_DB,
+    user=pg_user2, password=cred2.token, sslmode="require"
+)
+conn2.autocommit = True
+with conn2.cursor() as cur:
+    cur.execute("DELETE FROM tpch.orders_staging WHERE cdc_id <= %s", (max_cdc_id,))
+    print(f"Cleaned up {{cur.rowcount}} processed CDC records (cdc_id <= {{max_cdc_id}})")
+conn2.close()
+print("Forward ETL complete!")
 '''
 
 # ── Upload notebook ───────────────────────────────────────────────────────────

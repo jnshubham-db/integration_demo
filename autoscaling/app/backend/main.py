@@ -9,28 +9,31 @@ Authentication:
 
 Architecture:
   READ  orders list/detail → tpch_sync_as.orders   (synced read-only, Delta snapshot)
-  WRITE create/update/delete → tpch.orders_staging  (writable, forward ETL source)
+  WRITE create/update/delete → tpch.orders_staging  (CDC log — append-only, forward ETL source)
   READ  customers           → tpch_sync_as.customer (synced read-only)
-  SEED                      → tpch.orders_staging   (loads rows from Delta warehouse)
+
+CDC Pattern:
+  orders_staging is a CDC log table. Each operation (INSERT/UPDATE/DELETE) appends a new row
+  with _operation and _timestamp columns. The Forward ETL job deduplicates by o_orderkey
+  (latest cdc_id wins), applies the three-way MERGE (insert/update/delete) to Delta,
+  then cleans up processed records.
 """
 
 import base64
 import json
 import os
-import time
 from datetime import date
 from typing import Optional
 
 import psycopg2
 import psycopg2.extras
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.sql import StatementState
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-app = FastAPI(title="TPC-H Autoscaling Lakebase Demo")
+app = FastAPI(title="LakeSync Autoscaling")
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
@@ -158,82 +161,52 @@ def count_orders(request: Request, search: str = ""):
         conn.close()
 
 
-@app.get("/api/orders/staging")
-def list_staging_orders(request: Request, limit: int = 50, offset: int = 0):
-    """List pending changes in staging (awaiting forward ETL)."""
-    conn = get_conn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                f"SELECT * FROM {STAGING_SCHEMA}.orders_staging ORDER BY last_modified DESC LIMIT %s OFFSET %s",
-                (limit, offset),
-            )
-            return [dict(r) for r in cur.fetchall()]
-    finally:
-        conn.close()
-
-
 @app.get("/api/orders/{order_key}")
 def get_order(request: Request, order_key: int):
-    """Check staging first (pending changes), fall back to synced table."""
+    """Get a single order from the synced table."""
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                f"SELECT * FROM {STAGING_SCHEMA}.orders_staging WHERE o_orderkey = %s",
+                f"SELECT * FROM {SYNCED_SCHEMA}.orders WHERE o_orderkey = %s",
                 (order_key,),
             )
             row = cur.fetchone()
-            if row:
-                return {**dict(row), "_source": "staging"}
-            try:
-                cur.execute(
-                    f"SELECT * FROM {SYNCED_SCHEMA}.orders WHERE o_orderkey = %s",
-                    (order_key,),
-                )
-                row = cur.fetchone()
-            except (psycopg2.errors.UndefinedTable, psycopg2.errors.InvalidSchemaName):
-                row = None
             if not row:
                 raise HTTPException(status_code=404, detail="Order not found")
             return {**dict(row), "_source": "synced"}
+    except (psycopg2.errors.UndefinedTable, psycopg2.errors.InvalidSchemaName):
+        raise HTTPException(status_code=404, detail="Synced table not available")
     finally:
         conn.close()
 
 
-# ── Orders WRITE — to staging table ──────────────────────────────────────────
+# ── Orders WRITE — CDC log to staging table ──────────────────────────────────
 
 @app.post("/api/orders", status_code=201)
 def create_order(request: Request, order: OrderCreate):
-    """Create new order in staging (merged to Delta by forward ETL)."""
+    """Append an INSERT CDC record to the staging log."""
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 f"""INSERT INTO {STAGING_SCHEMA}.orders_staging
-                   (o_orderkey,o_custkey,o_orderstatus,o_totalprice,o_orderdate,
-                    o_orderpriority,o_clerk,o_shippriority,o_comment)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                   (o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate,
+                    o_orderpriority, o_clerk, o_shippriority, o_comment, _operation)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'INSERT') RETURNING *""",
                 (order.o_orderkey, order.o_custkey, order.o_orderstatus,
                  order.o_totalprice, order.o_orderdate, order.o_orderpriority,
                  order.o_clerk, order.o_shippriority, order.o_comment),
             )
             conn.commit()
             return dict(cur.fetchone())
-    except psycopg2.errors.UniqueViolation:
-        conn.rollback()
-        raise HTTPException(status_code=409, detail="Order key already exists in staging")
     finally:
         conn.close()
 
 
 @app.put("/api/orders/{order_key}")
 def update_order(request: Request, order_key: int, order: OrderUpdate):
-    """
-    Upsert into staging:
-    - If already in staging → update it
-    - If only in synced table → copy to staging with updates applied
-    """
+    """Append an UPDATE CDC record to the staging log."""
     updates = {k: v for k, v in order.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -241,109 +214,53 @@ def update_order(request: Request, order_key: int, order: OrderUpdate):
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Read current state from synced table
+            try:
+                cur.execute(
+                    f"SELECT * FROM {SYNCED_SCHEMA}.orders WHERE o_orderkey = %s",
+                    (order_key,),
+                )
+                source = cur.fetchone()
+            except (psycopg2.errors.UndefinedTable, psycopg2.errors.InvalidSchemaName):
+                source = None
+
+            if not source:
+                raise HTTPException(status_code=404, detail="Order not found")
+
+            row = dict(source)
+            row.update(updates)
+
+            # Append CDC UPDATE record
             cur.execute(
-                f"SELECT * FROM {STAGING_SCHEMA}.orders_staging WHERE o_orderkey = %s",
-                (order_key,),
+                f"""INSERT INTO {STAGING_SCHEMA}.orders_staging
+                    (o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate,
+                     o_orderpriority, o_clerk, o_shippriority, o_comment, _operation)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'UPDATE') RETURNING *""",
+                (row["o_orderkey"], row["o_custkey"], row["o_orderstatus"],
+                 row["o_totalprice"], row["o_orderdate"], row["o_orderpriority"],
+                 row["o_clerk"], row["o_shippriority"], row["o_comment"]),
             )
-            existing = cur.fetchone()
-
-            if existing:
-                set_clause = ", ".join(f"{k} = %s" for k in updates)
-                values = list(updates.values()) + [order_key]
-                cur.execute(
-                    f"UPDATE {STAGING_SCHEMA}.orders_staging SET {set_clause}, last_modified = NOW() WHERE o_orderkey = %s RETURNING *",
-                    values,
-                )
-                conn.commit()
-                return dict(cur.fetchone())
-            else:
-                try:
-                    cur.execute(
-                        f"SELECT * FROM {SYNCED_SCHEMA}.orders WHERE o_orderkey = %s",
-                        (order_key,),
-                    )
-                    source = cur.fetchone()
-                except (psycopg2.errors.UndefinedTable, psycopg2.errors.InvalidSchemaName):
-                    source = None
-
-                if not source:
-                    raise HTTPException(status_code=404, detail="Order not found")
-
-                row = dict(source)
-                row.update(updates)
-                cur.execute(
-                    f"""INSERT INTO {STAGING_SCHEMA}.orders_staging
-                        (o_orderkey,o_custkey,o_orderstatus,o_totalprice,o_orderdate,
-                         o_orderpriority,o_clerk,o_shippriority,o_comment)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
-                    (row["o_orderkey"], row["o_custkey"], row["o_orderstatus"],
-                     row["o_totalprice"], row["o_orderdate"], row["o_orderpriority"],
-                     row["o_clerk"], row["o_shippriority"], row["o_comment"]),
-                )
-                conn.commit()
-                return dict(cur.fetchone())
+            conn.commit()
+            return dict(cur.fetchone())
     finally:
         conn.close()
 
 
 @app.delete("/api/orders/{order_key}", status_code=204)
 def delete_order(request: Request, order_key: int):
-    """Remove from staging (removes pending change; order persists in Delta)."""
+    """Append a DELETE CDC record to the staging log."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                f"DELETE FROM {STAGING_SCHEMA}.orders_staging WHERE o_orderkey = %s",
+                f"""INSERT INTO {STAGING_SCHEMA}.orders_staging
+                    (o_orderkey, _operation)
+                    VALUES (%s, 'DELETE')""",
                 (order_key,),
             )
             conn.commit()
-            if cur.rowcount == 0:
-                raise HTTPException(status_code=404, detail="Order not found in staging")
     finally:
         conn.close()
-
-
-# ── Seed from Delta into staging ──────────────────────────────────────────────
-
-@app.post("/api/seed")
-def seed_from_delta(limit: int = 100):
-    """Pull rows from Delta (integration_demo.tpch.orders) into staging."""
-    w = WorkspaceClient()
-    warehouse_id = next(w.warehouses.list()).id
-    resp = w.statement_execution.execute_statement(
-        statement=f"""SELECT o_orderkey, o_custkey, o_orderstatus,
-                             CAST(o_totalprice AS STRING), o_orderdate,
-                             o_orderpriority, o_clerk, o_shippriority, o_comment
-                      FROM integration_demo.tpch.orders LIMIT {limit}""",
-        warehouse_id=warehouse_id,
-        wait_timeout="30s",
-    )
-    while resp.status.state == StatementState.RUNNING:
-        time.sleep(3)
-        resp = w.statement_execution.get_statement(resp.statement_id)
-    if resp.status.state == StatementState.FAILED:
-        raise HTTPException(status_code=500, detail=resp.status.error.message)
-
-    rows = resp.result.data_array or []
-    conn = get_conn()
-    inserted = 0
-    try:
-        with conn.cursor() as cur:
-            for row in rows:
-                cur.execute(
-                    f"""INSERT INTO {STAGING_SCHEMA}.orders_staging
-                       (o_orderkey,o_custkey,o_orderstatus,o_totalprice,o_orderdate,
-                        o_orderpriority,o_clerk,o_shippriority,o_comment)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT (o_orderkey) DO NOTHING""",
-                    (int(row[0]), int(row[1]), row[2], float(row[3]),
-                     row[4], row[5], row[6], int(row[7]), row[8]),
-                )
-                inserted += cur.rowcount
-        conn.commit()
-    finally:
-        conn.close()
-    return {"seeded": inserted, "attempted": len(rows)}
 
 
 # ── Customers READ — from synced table ────────────────────────────────────────

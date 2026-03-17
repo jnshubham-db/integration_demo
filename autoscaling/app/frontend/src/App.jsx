@@ -40,7 +40,6 @@ const S = {
   formInput:{ padding: '6px 10px', borderRadius: 5, border: `1px solid ${C.border}`, fontSize: 13 },
   inlineInput: { padding: '4px 8px', borderRadius: 4, border: `1px solid ${C.dbRed}`, fontSize: 12, width: 100 },
   pager:   { display: 'flex', gap: 8, alignItems: 'center', marginTop: 10, fontSize: 13, color: C.dbGray },
-  stagingNote: { fontSize: 12, color: '#92400E', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 6, padding: '6px 12px', marginBottom: 10 },
 };
 
 const btn  = (extra = {}) => ({ ...S.btn, ...extra });
@@ -50,7 +49,6 @@ const BTN  = {
   danger:  { background: '#DC2626', color: '#fff' },
   neutral: { background: '#E5E7EB', color: '#374151' },
   outline: { background: '#fff', color: C.dbNavy, border: `1px solid ${C.dbNavy}` },
-  amber:   { background: '#F59E0B', color: '#fff' },
 };
 
 // ── API helper ────────────────────────────────────────────────────────────────
@@ -65,7 +63,7 @@ async function api(path, opts = {}) {
 function ArchBanner() {
   return (
     <div style={S.arch}>
-      <div style={S.archTitle}>Architecture — Delta ↔ Lakebase Autoscaling</div>
+      <div style={S.archTitle}>Architecture — Delta ↔ Lakebase Autoscaling (CDC Pattern)</div>
       <div style={S.flow}>
         <div style={{ ...S.box, background: '#EFF6FF', borderColor: '#BFDBFE' }}>
           Delta Table<br/><small style={{color:C.dbGray}}>integration_demo.tpch.orders</small>
@@ -77,9 +75,9 @@ function ArchBanner() {
         <span style={{ color: C.dbGray, fontSize: 12, padding: '0 4px' }}>← READ list here</span>
         <span style={{ color: C.dbGray, fontSize: 18 }}>|</span>
         <div style={{ ...S.box, background: '#FFFBEB', borderColor: '#FDE68A' }}>
-          Lakebase (writable)<br/><small style={{color:C.dbGray}}>tpch.orders_staging</small>
+          Lakebase CDC Log<br/><small style={{color:C.dbGray}}>tpch.orders_staging</small>
         </div>
-        <span style={{ color: C.dbGray, fontSize: 12, padding: '0 4px' }}>← WRITE changes here</span>
+        <span style={{ color: C.dbGray, fontSize: 12, padding: '0 4px' }}>← CDC changes logged here</span>
         <span style={S.arrow}>⟶ Forward ETL (15 min) ⟶</span>
         <div style={{ ...S.box, background: '#EFF6FF', borderColor: '#BFDBFE' }}>
           Delta Table<br/><small style={{color:C.dbGray}}>integration_demo.tpch.orders</small>
@@ -87,8 +85,8 @@ function ArchBanner() {
       </div>
       <div style={{ marginTop: 10, fontSize: 12, color: C.dbGray, lineHeight: 1.7 }}>
         <b>📖 Read orders</b> — loaded from <code>tpch_sync_as.orders</code> (Lakebase synced table, mirrors Delta).&nbsp;&nbsp;
-        <b>✏️ Edit / Create / Delete</b> — changes go to <code>tpch.orders_staging</code> (writable Postgres).&nbsp;&nbsp;
-        <b>⚙️ Forward ETL</b> — Databricks Job runs every 15 min, MERGEs staging → Delta.&nbsp;&nbsp;
+        <b>✏️ Edit / Create / Delete</b> — CDC records logged to <code>tpch.orders_staging</code> with operation type (INSERT/UPDATE/DELETE).&nbsp;&nbsp;
+        <b>⚙️ Forward ETL</b> — Databricks Job runs every 15 min, deduplicates CDC log, and performs three-way MERGE (insert/update/delete) → Delta.&nbsp;&nbsp;
         <b>↺ Sync</b> — Delta changes flow back through the synced table to refresh the read view.
       </div>
     </div>
@@ -107,12 +105,9 @@ const EMPTY = {
 function OrdersSection() {
   const [orders, setOrders]       = useState([]);
   const [total, setTotal]         = useState(0);
-  const [staging, setStaging]     = useState([]);
   const [search, setSearch]       = useState('');
   const [offset, setOffset]       = useState(0);
   const [loading, setLoading]     = useState(false);
-  const [seeding, setSeeding]     = useState(false);
-  const [showStaging, setShowStaging] = useState(false);
   const [msg, setMsg]             = useState(null);
   const [showForm, setShowForm]   = useState(false);
   const [newOrder, setNewOrder]   = useState({ ...EMPTY });
@@ -134,64 +129,42 @@ function OrdersSection() {
     finally { setLoading(false); }
   }, [search, offset]);
 
-  const fetchStaging = useCallback(async () => {
-    try {
-      const rows = await api('/api/orders/staging?limit=50');
-      setStaging(rows);
-    } catch (e) { /* staging table may be empty */ }
-  }, []);
-
   useEffect(() => { fetchOrders(); }, [fetchOrders]);
-  useEffect(() => { if (showStaging) fetchStaging(); }, [showStaging, fetchStaging]);
 
-  // Seed into staging
-  const seedFromDelta = async () => {
-    setSeeding(true); setMsg(null);
-    try {
-      const r = await api('/api/seed', { method: 'POST' });
-      setMsg({ type: 'success', text: `Seeded ${r.seeded} orders into staging (${r.attempted} attempted). Forward ETL will sync to Delta.` });
-      fetchStaging();
-    } catch (e) { setMsg({ type: 'error', text: 'Seed failed: ' + e.message }); }
-    finally { setSeeding(false); }
-  };
-
-  // Create → writes to staging
+  // Create → logs INSERT CDC record
   const createOrder = async (e) => {
     e.preventDefault();
     try {
       await api('/api/orders', { method: 'POST', body: JSON.stringify(newOrder) });
-      setMsg({ type: 'success', text: `Order ${newOrder.o_orderkey} created in staging. Forward ETL will merge to Delta.` });
+      setMsg({ type: 'success', text: `Order ${newOrder.o_orderkey} queued for insert. Forward ETL will merge to Delta.` });
       setShowForm(false); setNewOrder({ ...EMPTY });
-      fetchStaging();
+      fetchOrders();
     } catch (e) { setMsg({ type: 'error', text: e.message }); }
   };
 
-  // Edit → writes to staging (copies from synced if not already in staging)
+  // Edit → logs UPDATE CDC record
   const startEdit = (row) => { setEditKey(row.o_orderkey); setEditRow({ ...row }); };
   const cancelEdit = () => { setEditKey(null); setEditRow({}); };
   const saveEdit = async () => {
     try {
       await api(`/api/orders/${editKey}`, { method: 'PUT', body: JSON.stringify(editRow) });
-      setMsg({ type: 'success', text: `Order ${editKey} saved to staging. Forward ETL will merge to Delta.` });
+      setMsg({ type: 'success', text: `Order ${editKey} queued for update. Forward ETL will merge to Delta.` });
       cancelEdit();
       fetchOrders();
-      fetchStaging();
     } catch (e) { setMsg({ type: 'error', text: e.message }); }
   };
 
-  // Delete → removes from staging only
+  // Delete → logs DELETE CDC record
   const deleteOrder = async (key) => {
-    if (!window.confirm(`Remove order ${key} from staging?\n\nNote: The order will remain in the Delta synced view until the next Forward ETL run removes it.`)) return;
+    if (!window.confirm(`Queue deletion of order ${key}?\n\nA DELETE CDC record will be logged. The Forward ETL job will remove it from Delta on the next run.`)) return;
     try {
       await api(`/api/orders/${key}`, { method: 'DELETE' });
-      setMsg({ type: 'success', text: `Order ${key} removed from staging.` });
+      setMsg({ type: 'success', text: `Order ${key} queued for deletion. Forward ETL will remove from Delta.` });
       fetchOrders();
-      fetchStaging();
     } catch (e) { setMsg({ type: 'error', text: e.message }); }
   };
 
-  const READ_COLS    = ['o_orderkey','o_custkey','o_orderstatus','o_totalprice','o_orderdate','o_orderpriority','o_comment'];
-  const STAGING_COLS = ['o_orderkey','o_custkey','o_orderstatus','o_totalprice','o_orderdate','o_orderpriority','o_comment','last_modified'];
+  const READ_COLS = ['o_orderkey','o_custkey','o_orderstatus','o_totalprice','o_orderdate','o_orderpriority','o_comment'];
 
   return (
     <div style={S.section}>
@@ -222,13 +195,6 @@ function OrdersSection() {
           {showForm ? '✕ Cancel' : '+ New Order'}
         </button>
         <button style={btn(BTN.neutral)} onClick={fetchOrders}>↺ Refresh</button>
-        <button style={btn({ ...BTN.outline, opacity: seeding ? 0.6 : 1 })} onClick={seedFromDelta} disabled={seeding}>
-          {seeding ? 'Seeding…' : '⬇ Seed 100 from Delta'}
-        </button>
-        <button style={btn({ ...BTN.amber, opacity: showStaging ? 1 : 0.85 })}
-          onClick={() => setShowStaging(v => !v)}>
-          {showStaging ? '▲ Hide' : '▼ Show'} Pending Changes ({staging.length})
-        </button>
       </div>
 
       {msg && <div style={msg.type === 'error' ? S.error : S.success}>{msg.text}</div>}
@@ -236,8 +202,8 @@ function OrdersSection() {
       {/* Create form */}
       {showForm && (
         <>
-          <div style={S.stagingNote}>
-            ✏️ New orders are written to <strong>tpch.orders_staging</strong> (Lakebase writable). The Forward ETL job will MERGE them into Delta every 15 min.
+          <div style={{ fontSize: 12, color: '#92400E', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 6, padding: '6px 12px', marginBottom: 10 }}>
+            ✏️ New orders are logged as CDC INSERT records in <strong>tpch.orders_staging</strong>. The Forward ETL job will MERGE them into Delta every 15 min.
           </div>
           <form onSubmit={createOrder} style={S.form}>
             {Object.keys(EMPTY).map(k => (
@@ -249,7 +215,7 @@ function OrdersSection() {
               </label>
             ))}
             <div style={{ gridColumn: 'span 3' }}>
-              <button type="submit" style={btn(BTN.success)}>✓ Save to Staging</button>
+              <button type="submit" style={btn(BTN.success)}>✓ Queue Insert</button>
             </div>
           </form>
         </>
@@ -273,7 +239,7 @@ function OrdersSection() {
                     <thead>
                       <tr>
                         {READ_COLS.map(c => <th key={c} style={S.th}>{c.replace('o_', '')}</th>)}
-                        <th style={{ ...S.th, textAlign: 'center' }}>Actions → Staging</th>
+                        <th style={{ ...S.th, textAlign: 'center' }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -294,7 +260,7 @@ function OrdersSection() {
                             <td style={{ ...(i % 2 === 0 ? S.td : S.tdEven), textAlign: 'center', whiteSpace: 'nowrap' }}>
                               {isEdit
                                 ? <>
-                                    <button style={btn({ ...BTN.success, marginRight: 4, padding: '4px 10px', fontSize: 12 })} onClick={saveEdit}>✓ Save to Staging</button>
+                                    <button style={btn({ ...BTN.success, marginRight: 4, padding: '4px 10px', fontSize: 12 })} onClick={saveEdit}>✓ Queue Update</button>
                                     <button style={btn({ ...BTN.neutral, padding: '4px 10px', fontSize: 12 })} onClick={cancelEdit}>✕</button>
                                   </>
                                 : <>
@@ -319,46 +285,6 @@ function OrdersSection() {
             )}
           </>
         )}
-
-      {/* ── Pending Changes (Staging) ── */}
-      {showStaging && (
-        <div style={{ marginTop: 24, border: '2px solid #FDE68A', borderRadius: 8, padding: 16, background: '#FFFBEB' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-            <div>
-              <span style={{ fontWeight: 700, color: '#92400E', fontSize: 15 }}>⏳ Pending ETL Changes</span>
-              <div style={{ fontSize: 12, color: '#B45309', marginTop: 2 }}>
-                Source: <code>tpch.orders_staging</code> — changes queued for Forward ETL → Delta MERGE
-              </div>
-            </div>
-            <button style={btn({ ...BTN.neutral, padding: '5px 10px', fontSize: 12 })} onClick={fetchStaging}>↺ Refresh</button>
-          </div>
-          {staging.length === 0
-            ? <div style={{ color: '#B45309', fontSize: 13, textAlign: 'center', padding: 12 }}>No pending changes. Create or edit orders to see them here before the Forward ETL runs.</div>
-            : (
-              <div style={{ overflowX: 'auto', borderRadius: 6, border: '1px solid #FDE68A' }}>
-                <table style={S.table}>
-                  <thead>
-                    <tr>{STAGING_COLS.map(c => <th key={c} style={{ ...S.th, background: '#92400E' }}>{c.replace('o_', '')}</th>)}</tr>
-                  </thead>
-                  <tbody>
-                    {staging.map((row, i) => (
-                      <tr key={row.o_orderkey}>
-                        {STAGING_COLS.map(c => (
-                          <td key={c} style={{ ...S.td, background: i % 2 === 0 ? '#fff' : '#FFFBEB' }}>
-                            {String(row[c] ?? '')}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          <div style={{ fontSize: 12, color: '#B45309', marginTop: 8 }}>
-            💡 Forward ETL job runs every 15 min and MERGEs these rows into <code>integration_demo.tpch.orders</code> (Delta). The synced table then picks up those changes.
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -598,7 +524,7 @@ export default function App() {
       <div style={S.header}>
         <h1 style={S.h1}>LakeSync <span style={{ fontSize: 14, fontWeight: 500, color: C.dbGray, marginLeft: 8 }}>Autoscaling</span></h1>
         <p style={{ margin: '6px 0 0', color: C.dbGray, fontSize: 14 }}>
-          Reads from synced Delta snapshot · Writes to Lakebase staging · Forward ETL every 15 min
+          Reads from synced Delta snapshot · CDC log captures all changes · Forward ETL every 15 min
         </p>
       </div>
       <ArchBanner />

@@ -146,10 +146,12 @@ cur.execute("CREATE SCHEMA IF NOT EXISTS tpch")
 # Schema for synced tables (will be populated by Lakebase after UI setup)
 cur.execute(f"CREATE SCHEMA IF NOT EXISTS {UC_SCHEMA}")
 
-# Writable orders staging table (CRUD target for the app)
+# CDC log table for capturing all CRUD operations (INSERT/UPDATE/DELETE)
+cur.execute("DROP TABLE IF EXISTS tpch.orders_staging")
 cur.execute("""
-    CREATE TABLE IF NOT EXISTS tpch.orders_staging (
-        o_orderkey      BIGINT PRIMARY KEY,
+    CREATE TABLE tpch.orders_staging (
+        cdc_id          BIGSERIAL PRIMARY KEY,
+        o_orderkey      BIGINT NOT NULL,
         o_custkey       BIGINT,
         o_orderstatus   CHAR(1),
         o_totalprice    NUMERIC(15,2),
@@ -158,9 +160,11 @@ cur.execute("""
         o_clerk         VARCHAR(15),
         o_shippriority  INT,
         o_comment       VARCHAR(79),
-        last_modified   TIMESTAMPTZ DEFAULT NOW()
+        _operation      VARCHAR(10) NOT NULL,
+        _timestamp      TIMESTAMPTZ DEFAULT NOW()
     )
 """)
+cur.execute("CREATE INDEX IF NOT EXISTS idx_staging_orderkey_cdc ON tpch.orders_staging (o_orderkey, cdc_id DESC)")
 
 # Grant access to all Databricks users connecting via OAuth
 cur.execute("GRANT USAGE ON SCHEMA tpch TO PUBLIC")
@@ -171,7 +175,7 @@ cur.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA tpch TO PUBLIC")
 cur.close()
 conn.close()
 print(f"  Created schemas: tpch, {UC_SCHEMA}")
-print("  Created tpch.orders_staging + granted PUBLIC access.")
+print("  Created tpch.orders_staging (CDC log table) + granted PUBLIC access.")
 
 # ============================================================
 # Part D: Synced Tables — manual step via Databricks UI
