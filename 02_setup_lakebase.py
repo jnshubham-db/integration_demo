@@ -144,10 +144,10 @@ for table, pks in TPCH_PKS.items():
                 spec=SyncedTableSpec(
                     source_table_full_name=f"integration_demo.tpch.{table}",
                     primary_key_columns=pks,
-                    scheduling_policy=SyncedTableSchedulingPolicy.CONTINUOUS,
+                    scheduling_policy=SyncedTableSchedulingPolicy.TRIGGERED,
                     new_pipeline_spec=NewPipelineSpec(
-                        storage_catalog=LAKEBASE_CATALOG,
-                        storage_schema="staging",
+                        storage_catalog="integration_demo",
+                        storage_schema="lakebase_sync_staging",
                     ),
                 ),
             )

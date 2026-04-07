@@ -1,17 +1,11 @@
 """
-deploy_app.py: Build the React frontend and deploy the full app to Databricks Apps.
-
-Steps:
-  1. npm run build (React → frontend/build/)
-  2. Upload all files to /Workspace/Users/{user}/apps/integration_demo/
-  3. Create (or update) the Databricks App
-  4. Deploy with SNAPSHOT mode
-  5. Print the app URL
+deploy_app.py (Autoscaling): Build React + deploy to Databricks Apps.
+App name: integration-demo-as  (separate from classic integration-demo)
+Uses AppResourcePostgres (w.postgres backend) instead of AppResourceDatabase.
 """
 
 import base64
 import json
-import os
 import subprocess
 import sys
 import time
@@ -19,36 +13,28 @@ from pathlib import Path
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.apps import (
-    App,
-    AppDeployment,
-    AppDeploymentMode,
-    AppResource,
-    AppResourceDatabase,
-    AppResourceDatabaseDatabasePermission,
-    AppResourceGenieSpace,
-    AppResourceGenieSpaceGenieSpacePermission,
-    AppResourceSqlWarehouse,
-    AppResourceSqlWarehouseSqlWarehousePermission,
-    ComputeState,
-    EnvVar,
+    App, AppDeployment, AppDeploymentMode,
+    AppResource, AppResourceGenieSpace, AppResourceGenieSpaceGenieSpacePermission,
+    AppResourceSqlWarehouse, AppResourceSqlWarehouseSqlWarehousePermission,
+    ComputeState, EnvVar,
 )
 from databricks.sdk.service.workspace import ImportFormat
 
-# --- Config -------------------------------------------------------------------
-APP_NAME = "integration-demo"
+APP_NAME = "integration-demo-as"
 HERE = Path(__file__).parent
 
-# Load lakebase config written by 02_setup_lakebase.py
-config_path = HERE.parent / "lakebase_config.json"
+config_path = HERE.parent / "autoscaling_config.json"
 if not config_path.exists():
-    sys.exit("lakebase_config.json not found. Run 02_setup_lakebase.py first.")
+    sys.exit("autoscaling_config.json not found. Run 02_setup_lakebase_autoscaling.py first.")
 
 with open(config_path) as f:
     cfg = json.load(f)
 
 pg_host       = cfg["pg_host"]
 database_id   = cfg["database_id"]
-instance_name = cfg["instance_name"]
+endpoint_path = cfg["endpoint_path"]
+project_id    = cfg["project_id"]
+branch_id     = cfg["branch_id"]
 
 genie_space_id = ""
 genie_path = HERE.parent / "genie_config.json"
@@ -58,28 +44,21 @@ if genie_path.exists():
 
 w = WorkspaceClient(profile="DEFAULT")
 me = w.current_user.me()
-user_name = me.user_name
-WORKSPACE_APP_PATH = f"/Workspace/Users/{user_name}/apps/{APP_NAME}"
+WORKSPACE_APP_PATH = f"/Workspace/Users/{me.user_name}/apps/{APP_NAME}"
 
-print(f"Deploying as: {user_name}")
+print(f"Deploying as: {me.user_name}")
 print(f"Workspace path: {WORKSPACE_APP_PATH}")
+print(f"App name: {APP_NAME}")
 
-# --- Step 1: Build React frontend ---------------------------------------------
+# ── Step 1: Build React ───────────────────────────────────────────────────────
 print("\n[1/4] Building React frontend...")
-frontend_dir = HERE / "frontend"
-result = subprocess.run(
-    ["npm", "run", "build"],
-    cwd=frontend_dir,
-    capture_output=True,
-    text=True,
-)
+result = subprocess.run(["npm", "run", "build"], cwd=HERE / "frontend",
+                        capture_output=True, text=True)
 if result.returncode != 0:
-    print("npm build FAILED:")
-    print(result.stderr)
-    sys.exit(1)
+    print("npm build FAILED:"); print(result.stderr); sys.exit(1)
 print("  Build succeeded.")
 
-# --- Step 2: Upload files to Workspace ----------------------------------------
+# ── Step 2: Upload ────────────────────────────────────────────────────────────
 print("\n[2/4] Uploading files to Workspace...")
 
 # Clean stale JS bundles to prevent file conflict errors on re-deploy
@@ -91,55 +70,33 @@ except Exception:
     pass
 
 def upload_file(local_path: Path, workspace_path: str):
-    """Upload a single file to Databricks Workspace."""
-    content = local_path.read_bytes()
-    encoded = base64.b64encode(content).decode("utf-8")
-    # Determine format
-    if local_path.suffix in (".py", ".txt", ".yaml", ".yml", ".json", ".js", ".jsx", ".html", ".css", ".md"):
-        fmt = ImportFormat.AUTO
-    else:
-        fmt = ImportFormat.AUTO
-    w.workspace.import_(
-        path=workspace_path,
-        content=encoded,
-        format=fmt,
-        overwrite=True,
-    )
+    encoded = base64.b64encode(local_path.read_bytes()).decode()
+    w.workspace.import_(path=workspace_path, content=encoded,
+                        format=ImportFormat.AUTO, overwrite=True)
 
 def upload_directory(local_dir: Path, workspace_dir: str):
-    """Recursively upload a directory."""
     for item in sorted(local_dir.rglob("*")):
         if item.is_file():
-            # Skip node_modules and .git
             parts = item.parts
             if "node_modules" in parts or ".git" in parts:
                 continue
             rel = item.relative_to(local_dir)
             ws_path = f"{workspace_dir}/{rel}".replace("\\", "/")
             print(f"  Uploading: {rel}")
-            # Ensure parent directory exists (workspace.mkdirs)
             parent = "/".join(ws_path.split("/")[:-1])
-            try:
-                w.workspace.mkdirs(path=parent)
-            except Exception:
-                pass
+            try: w.workspace.mkdirs(path=parent)
+            except Exception: pass
             upload_file(item, ws_path)
 
-# Ensure root workspace dir exists
-try:
-    w.workspace.mkdirs(path=WORKSPACE_APP_PATH)
-except Exception:
-    pass
+try: w.workspace.mkdirs(path=WORKSPACE_APP_PATH)
+except Exception: pass
 
-# Upload backend
 upload_directory(HERE / "backend", f"{WORKSPACE_APP_PATH}/backend")
 
-# Upload frontend/build (static assets)
 build_dir = HERE / "frontend" / "build"
 if build_dir.exists():
     upload_directory(build_dir, f"{WORKSPACE_APP_PATH}/frontend/build")
 
-# Upload root-level files
 for fname in ("app.yaml", "requirements.txt"):
     fpath = HERE / fname
     if fpath.exists():
@@ -148,18 +105,8 @@ for fname in ("app.yaml", "requirements.txt"):
 
 print("  Upload complete.")
 
-# --- Step 3: Create (or update) the app ---------------------------------------
+# ── Step 3: Create app ────────────────────────────────────────────────────────
 print("\n[3/4] Creating Databricks App...")
-
-database_resource = AppResource(
-    name="lakebase-tpch",
-    description="Lakebase for TPC-H demo",
-    database=AppResourceDatabase(
-        instance_name=instance_name,
-        database_name=database_id,
-        permission=AppResourceDatabaseDatabasePermission.CAN_CONNECT_AND_CREATE,
-    ),
-)
 
 DEFAULT_WAREHOUSE_ID = "148ccb90800933a1"  # Shared Endpoint
 
@@ -194,30 +141,28 @@ warehouse_resource = AppResource(
     ),
 )
 
-app_resources = [r for r in [database_resource, genie_resource, warehouse_resource] if r]
+app_resources = [r for r in [genie_resource, warehouse_resource] if r]
 try:
-    w.apps.create(
-        app=App(
-            name=APP_NAME,
-            description="LakeSync — Delta ↔ Lakebase integration",
-            resources=app_resources,
-        )
-    )
+    w.apps.create(app=App(
+        name=APP_NAME,
+        description="LakeSync — Autoscaling Lakebase",
+        resources=app_resources if app_resources else None,
+    ))
     print(f"  App '{APP_NAME}' created.")
 except Exception as e:
     if "already exists" in str(e).lower():
         print(f"  App '{APP_NAME}' already exists, will redeploy.")
         w.apps.update(name=APP_NAME, app=App(
             name=APP_NAME,
-            description="LakeSync — Delta ↔ Lakebase integration",
-            resources=app_resources,
+            description="LakeSync — Autoscaling Lakebase",
+            resources=app_resources if app_resources else None,
         ))
         print(f"  Updated app resources.")
     else:
         raise
 
-# Wait for app to be RUNNING before deploying
-print("  Waiting for app compute to be RUNNING...")
+# Wait for ACTIVE compute
+print("  Waiting for compute to be ACTIVE...")
 for _ in range(60):
     app_state = w.apps.get(name=APP_NAME)
     state = app_state.compute_status.state if app_state.compute_status else None
@@ -225,16 +170,12 @@ for _ in range(60):
     if state == ComputeState.ACTIVE:
         break
     if state in (ComputeState.ERROR, ComputeState.STOPPED):
-        # Try to start the app
-        print(f"  Starting app...")
-        try:
-            w.apps.start(name=APP_NAME).wait()
-        except Exception:
-            pass
+        try: w.apps.start(name=APP_NAME).wait()
+        except Exception: pass
         break
     time.sleep(10)
 
-# --- Step 3b: Grant catalog permissions to app SP ----------------------------
+# ── Step 3b: Grant catalog permissions to app SP ─────────────────────────────
 app_sp_client_id = w.apps.get(name=APP_NAME).service_principal_client_id
 print(f"  Granting UC permissions to app SP: {app_sp_client_id}")
 catalog_grants = [
@@ -249,7 +190,7 @@ for _sql in catalog_grants:
         print(f"  Warning: {_sql[:60]} | {_r.status.error.message[:80]}")
 print("  UC grants applied.")
 
-# --- Step 4: Deploy -----------------------------------------------------------
+# ── Step 4: Deploy ────────────────────────────────────────────────────────────
 print("\n[4/4] Deploying app (SNAPSHOT mode)...")
 
 deployment = w.apps.deploy(
@@ -260,7 +201,7 @@ deployment = w.apps.deploy(
         env_vars=[
             EnvVar(name="LAKEBASE_HOST",     value=pg_host),
             EnvVar(name="LAKEBASE_DB",       value=database_id),
-            EnvVar(name="LAKEBASE_INSTANCE", value=instance_name),
+            EnvVar(name="LAKEBASE_ENDPOINT", value=endpoint_path),
             EnvVar(name="GENIE_SPACE_ID",    value=genie_space_id),
         ],
     ),
@@ -268,7 +209,5 @@ deployment = w.apps.deploy(
 
 print(f"\n✓ Deployment complete!")
 print(f"  Deployment ID: {deployment.deployment_id}")
-
-# Get app URL
 app_info = w.apps.get(name=APP_NAME)
 print(f"  App URL: {app_info.url}")

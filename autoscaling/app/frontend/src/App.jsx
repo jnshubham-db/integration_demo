@@ -12,16 +12,16 @@ const C = {
 };
 
 const S = {
-  page:    { fontFamily: "'Inter', sans-serif", maxWidth: 1200, margin: '0 auto', padding: '24px 16px', background: '#fff', minHeight: '100vh' },
+  page:    { fontFamily: "'Inter', sans-serif", maxWidth: 1300, margin: '0 auto', padding: '24px 16px', background: '#fff', minHeight: '100vh' },
   header:  { borderBottom: `3px solid ${C.dbRed}`, paddingBottom: 16, marginBottom: 24 },
   h1:      { color: C.dbNavy, fontSize: 28, fontWeight: 700, margin: 0 },
-  arch:    { background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 16, marginBottom: 24, fontSize: 13 },
-  archTitle: { fontWeight: 700, color: C.dbNavy, marginBottom: 8, fontSize: 14 },
+  arch:    { background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 16, marginBottom: 28, fontSize: 13 },
+  archTitle: { fontWeight: 700, color: C.dbNavy, marginBottom: 10, fontSize: 14 },
   flow:    { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  box:     { background: '#fff', border: `1px solid ${C.border}`, borderRadius: 6, padding: '6px 12px', fontSize: 12, fontWeight: 600 },
+  box:     { background: '#fff', border: `1px solid ${C.border}`, borderRadius: 6, padding: '6px 12px', fontSize: 12, fontWeight: 600, lineHeight: 1.5 },
   arrow:   { color: C.dbRed, fontWeight: 700, fontSize: 16 },
-  section: { marginBottom: 32 },
-  sectionHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `2px solid ${C.dbRed}`, paddingBottom: 6, marginBottom: 12 },
+  section: { marginBottom: 36 },
+  sectionHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: `2px solid ${C.dbRed}`, paddingBottom: 8, marginBottom: 14 },
   h2:      { color: C.dbNavy, fontSize: 20, fontWeight: 700, margin: 0 },
   badge:   { fontSize: 11, borderRadius: 12, padding: '2px 10px', fontWeight: 600 },
   controls:{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' },
@@ -43,7 +43,13 @@ const S = {
 };
 
 const btn  = (extra = {}) => ({ ...S.btn, ...extra });
-const BTN  = { primary: { background: C.dbRed, color: '#fff' }, success: { background: C.dbGreen, color: '#fff' }, danger: { background: '#DC2626', color: '#fff' }, neutral: { background: '#E5E7EB', color: '#374151' }, outline: { background: '#fff', color: C.dbNavy, border: `1px solid ${C.dbNavy}` } };
+const BTN  = {
+  primary: { background: C.dbRed, color: '#fff' },
+  success: { background: C.dbGreen, color: '#fff' },
+  danger:  { background: '#DC2626', color: '#fff' },
+  neutral: { background: '#E5E7EB', color: '#374151' },
+  outline: { background: '#fff', color: C.dbNavy, border: `1px solid ${C.dbNavy}` },
+};
 
 // ── API helper ────────────────────────────────────────────────────────────────
 async function api(path, opts = {}) {
@@ -57,42 +63,56 @@ async function api(path, opts = {}) {
 function ArchBanner() {
   return (
     <div style={S.arch}>
-      <div style={S.archTitle}>How this app works</div>
+      <div style={S.archTitle}>Architecture — Delta ↔ Lakebase Autoscaling (CDC Pattern)</div>
       <div style={S.flow}>
-        <div style={{ ...S.box, background: '#EFF6FF', borderColor: '#BFDBFE' }}>Delta Table<br/><small style={{color:C.dbGray}}>integration_demo.tpch.orders</small></div>
+        <div style={{ ...S.box, background: '#EFF6FF', borderColor: '#BFDBFE' }}>
+          Delta Table<br/><small style={{color:C.dbGray}}>integration_demo.tpch.orders</small>
+        </div>
         <span style={S.arrow}>⟶ Reverse ETL (Sync Table) ⟶</span>
-        <div style={{ ...S.box, background: '#F0FDF4', borderColor: '#BBF7D0' }}>Lakebase (read-only)<br/><small style={{color:C.dbGray}}>tpch_sync.customer</small></div>
-        <span style={{color:C.dbGray, fontSize:12}}>|</span>
-        <div style={{ ...S.box, background: '#FFF7ED', borderColor: '#FED7AA' }}>Lakebase (writable)<br/><small style={{color:C.dbGray}}>tpch.orders_staging</small></div>
+        <div style={{ ...S.box, background: '#F0FDF4', borderColor: '#BBF7D0' }}>
+          Lakebase (read-only)<br/><small style={{color:C.dbGray}}>tpch_sync_as.orders</small>
+        </div>
+        <span style={{ color: C.dbGray, fontSize: 12, padding: '0 4px' }}>← READ list here</span>
+        <span style={{ color: C.dbGray, fontSize: 18 }}>|</span>
+        <div style={{ ...S.box, background: '#FFFBEB', borderColor: '#FDE68A' }}>
+          Lakebase CDC Log<br/><small style={{color:C.dbGray}}>tpch.orders_staging</small>
+        </div>
+        <span style={{ color: C.dbGray, fontSize: 12, padding: '0 4px' }}>← CDC changes logged here</span>
         <span style={S.arrow}>⟶ Forward ETL (15 min) ⟶</span>
-        <div style={{ ...S.box, background: '#EFF6FF', borderColor: '#BFDBFE' }}>Delta Table<br/><small style={{color:C.dbGray}}>integration_demo.tpch.orders</small></div>
+        <div style={{ ...S.box, background: '#EFF6FF', borderColor: '#BFDBFE' }}>
+          Delta Table<br/><small style={{color:C.dbGray}}>integration_demo.tpch.orders</small>
+        </div>
       </div>
-      <div style={{ marginTop: 10, fontSize: 12, color: C.dbGray }}>
-        <b>Read:</b> orders are loaded from <code>tpch.orders_staging</code> (Lakebase Postgres). &nbsp;
-        <b>Write/Edit/Delete:</b> changes go directly to Lakebase Postgres. &nbsp;
-        <b>Seed:</b> pulls rows from the Delta table into staging so you have data to work with. &nbsp;
-        <b>Forward ETL:</b> a Databricks Job runs every 15 min to MERGE staging → Delta.
+      <div style={{ marginTop: 10, fontSize: 12, color: C.dbGray, lineHeight: 1.7 }}>
+        <b>📖 Read orders</b> — loaded from <code>tpch_sync_as.orders</code> (Lakebase synced table, mirrors Delta).&nbsp;&nbsp;
+        <b>✏️ Edit / Create / Delete</b> — CDC records logged to <code>tpch.orders_staging</code> with operation type (INSERT/UPDATE/DELETE).&nbsp;&nbsp;
+        <b>⚙️ Forward ETL</b> — Databricks Job runs every 15 min, deduplicates CDC log, and performs three-way MERGE (insert/update/delete) → Delta.&nbsp;&nbsp;
+        <b>↺ Sync</b> — Delta changes flow back through the synced table to refresh the read view.
       </div>
     </div>
   );
 }
 
 // ── Empty order template ──────────────────────────────────────────────────────
-const EMPTY = { o_orderkey:'', o_custkey:'', o_orderstatus:'O', o_totalprice:'', o_orderdate: new Date().toISOString().slice(0,10), o_orderpriority:'3-MEDIUM', o_clerk:'Clerk#000000001', o_shippriority:'0', o_comment:'' };
+const EMPTY = {
+  o_orderkey: '', o_custkey: '', o_orderstatus: 'O', o_totalprice: '',
+  o_orderdate: new Date().toISOString().slice(0, 10),
+  o_orderpriority: '3-MEDIUM', o_clerk: 'Clerk#000000001',
+  o_shippriority: '0', o_comment: '',
+};
 
 // ── Orders Section ────────────────────────────────────────────────────────────
 function OrdersSection() {
-  const [orders, setOrders]     = useState([]);
-  const [total, setTotal]       = useState(0);
-  const [search, setSearch]     = useState('');
-  const [offset, setOffset]     = useState(0);
-  const [loading, setLoading]   = useState(false);
-  const [seeding, setSeeding]   = useState(false);
-  const [msg, setMsg]           = useState(null); // {type:'error'|'success', text}
-  const [showForm, setShowForm] = useState(false);
-  const [newOrder, setNewOrder] = useState({ ...EMPTY });
-  const [editKey, setEditKey]   = useState(null);
-  const [editRow, setEditRow]   = useState({});
+  const [orders, setOrders]       = useState([]);
+  const [total, setTotal]         = useState(0);
+  const [search, setSearch]       = useState('');
+  const [offset, setOffset]       = useState(0);
+  const [loading, setLoading]     = useState(false);
+  const [msg, setMsg]             = useState(null);
+  const [showForm, setShowForm]   = useState(false);
+  const [newOrder, setNewOrder]   = useState({ ...EMPTY });
+  const [editKey, setEditKey]     = useState(null);
+  const [editRow, setEditRow]     = useState({});
   const LIMIT = 50;
 
   const fetchOrders = useCallback(async () => {
@@ -111,162 +131,158 @@ function OrdersSection() {
 
   useEffect(() => { fetchOrders(); }, [fetchOrders]);
 
-  // Seed
-  const seedFromDelta = async () => {
-    setSeeding(true); setMsg(null);
-    try {
-      const r = await api('/api/seed', { method: 'POST' });
-      setMsg({ type: 'success', text: `Seeded ${r.seeded} orders from Delta into staging (${r.attempted} attempted).` });
-      fetchOrders();
-    } catch (e) { setMsg({ type: 'error', text: 'Seed failed: ' + e.message }); }
-    finally { setSeeding(false); }
-  };
-
-  // Create
+  // Create → logs INSERT CDC record
   const createOrder = async (e) => {
     e.preventDefault();
     try {
       await api('/api/orders', { method: 'POST', body: JSON.stringify(newOrder) });
-      setMsg({ type: 'success', text: `Order ${newOrder.o_orderkey} created in Lakebase.` });
-      setShowForm(false); setNewOrder({ ...EMPTY }); fetchOrders();
+      setMsg({ type: 'success', text: `Order ${newOrder.o_orderkey} queued for insert. Forward ETL will merge to Delta.` });
+      setShowForm(false); setNewOrder({ ...EMPTY });
+      fetchOrders();
     } catch (e) { setMsg({ type: 'error', text: e.message }); }
   };
 
-  // Edit
+  // Edit → logs UPDATE CDC record
   const startEdit = (row) => { setEditKey(row.o_orderkey); setEditRow({ ...row }); };
   const cancelEdit = () => { setEditKey(null); setEditRow({}); };
   const saveEdit = async () => {
     try {
       await api(`/api/orders/${editKey}`, { method: 'PUT', body: JSON.stringify(editRow) });
-      setMsg({ type: 'success', text: `Order ${editKey} updated in Lakebase.` });
-      cancelEdit(); fetchOrders();
-    } catch (e) { setMsg({ type: 'error', text: e.message }); }
-  };
-
-  // Delete
-  const deleteOrder = async (key) => {
-    if (!window.confirm(`Delete order ${key} from Lakebase staging?`)) return;
-    try {
-      await api(`/api/orders/${key}`, { method: 'DELETE' });
-      setMsg({ type: 'success', text: `Order ${key} deleted from Lakebase.` });
+      setMsg({ type: 'success', text: `Order ${editKey} queued for update. Forward ETL will merge to Delta.` });
+      cancelEdit();
       fetchOrders();
     } catch (e) { setMsg({ type: 'error', text: e.message }); }
   };
 
-  const COLS = ['o_orderkey','o_custkey','o_orderstatus','o_totalprice','o_orderdate','o_orderpriority','o_comment'];
+  // Delete → logs DELETE CDC record
+  const deleteOrder = async (key) => {
+    if (!window.confirm(`Queue deletion of order ${key}?\n\nA DELETE CDC record will be logged. The Forward ETL job will remove it from Delta on the next run.`)) return;
+    try {
+      await api(`/api/orders/${key}`, { method: 'DELETE' });
+      setMsg({ type: 'success', text: `Order ${key} queued for deletion. Forward ETL will remove from Delta.` });
+      fetchOrders();
+    } catch (e) { setMsg({ type: 'error', text: e.message }); }
+  };
+
+  const READ_COLS = ['o_orderkey','o_custkey','o_orderstatus','o_totalprice','o_orderdate','o_orderpriority','o_comment'];
 
   return (
     <div style={S.section}>
-      {/* Section header */}
+
+      {/* ── Synced Orders (READ) ── */}
       <div style={S.sectionHead}>
         <div>
-          <h2 style={S.h2}>Orders</h2>
-          <div style={{ fontSize: 12, color: C.dbGray, marginTop: 2 }}>
-            Source: <code>tpch.orders_staging</code> (Lakebase Postgres — writable)
+          <h2 style={S.h2}>Orders <span style={{ fontSize: 13, fontWeight: 400, color: C.dbGray }}>(Delta snapshot via Synced Table)</span></h2>
+          <div style={{ fontSize: 12, color: C.dbGray, marginTop: 3 }}>
+            Source: <code>tpch_sync_as.orders</code> — read-only · updated continuously from Delta
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <span style={{ ...S.badge, background: '#FFF7ED', color: '#C2410C', border: '1px solid #FED7AA' }}>
-            {total} rows
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <span style={{ ...S.badge, background: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE' }}>
+            Synced · {total} rows
           </span>
           <span style={{ ...S.badge, background: '#F0FDF4', color: C.dbGreen, border: '1px solid #BBF7D0' }}>
-            CRUD
+            Read-Only
           </span>
         </div>
       </div>
 
       {/* Controls */}
       <div style={S.controls}>
-        <input style={S.input} placeholder="🔍  Search by comment…" value={search}
+        <input style={S.input} placeholder="🔍 Search by comment…" value={search}
           onChange={e => { setSearch(e.target.value); setOffset(0); }} />
         <button style={btn(BTN.primary)} onClick={() => { setShowForm(v => !v); setMsg(null); }}>
           {showForm ? '✕ Cancel' : '+ New Order'}
         </button>
         <button style={btn(BTN.neutral)} onClick={fetchOrders}>↺ Refresh</button>
-        <button style={btn({ ...BTN.outline, opacity: seeding ? 0.6 : 1 })} onClick={seedFromDelta} disabled={seeding}>
-          {seeding ? 'Seeding…' : '⬇ Seed 100 from Delta'}
-        </button>
       </div>
 
-      {/* Message */}
       {msg && <div style={msg.type === 'error' ? S.error : S.success}>{msg.text}</div>}
 
       {/* Create form */}
       {showForm && (
-        <form onSubmit={createOrder} style={S.form}>
-          {Object.keys(EMPTY).map(k => (
-            <label key={k} style={S.label}>
-              <span style={S.labelTxt}>{k.replace('o_', '')}</span>
-              <input style={S.formInput} value={newOrder[k]} required={['o_orderkey','o_custkey','o_comment'].includes(k)}
-                onChange={e => setNewOrder(v => ({ ...v, [k]: e.target.value }))} />
-            </label>
-          ))}
-          <div style={{ gridColumn: 'span 3' }}>
-            <button type="submit" style={btn(BTN.success)}>✓ Save Order</button>
+        <>
+          <div style={{ fontSize: 12, color: '#92400E', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 6, padding: '6px 12px', marginBottom: 10 }}>
+            ✏️ New orders are logged as CDC INSERT records in <strong>tpch.orders_staging</strong>. The Forward ETL job will MERGE them into Delta every 15 min.
           </div>
-        </form>
+          <form onSubmit={createOrder} style={S.form}>
+            {Object.keys(EMPTY).map(k => (
+              <label key={k} style={S.label}>
+                <span style={S.labelTxt}>{k.replace('o_', '')}</span>
+                <input style={S.formInput} value={newOrder[k]}
+                  required={['o_orderkey','o_custkey','o_comment'].includes(k)}
+                  onChange={e => setNewOrder(v => ({ ...v, [k]: e.target.value }))} />
+              </label>
+            ))}
+            <div style={{ gridColumn: 'span 3' }}>
+              <button type="submit" style={btn(BTN.success)}>✓ Queue Insert</button>
+            </div>
+          </form>
+        </>
       )}
 
-      {/* Table */}
+      {/* Synced orders table */}
       {loading
-        ? <p style={S.info}>Loading from Lakebase…</p>
+        ? <p style={S.info}>Loading from synced table…</p>
         : (
           <>
-            <div style={S.info}>{total} total rows · showing {offset + 1}–{Math.min(offset + LIMIT, total)}</div>
-            <div style={{ overflowX: 'auto', borderRadius: 8, border: `1px solid ${C.border}` }}>
-              <table style={S.table}>
-                <thead>
-                  <tr>
-                    {COLS.map(c => <th key={c} style={S.th}>{c.replace('o_','')}</th>)}
-                    <th style={{ ...S.th, textAlign: 'center' }}>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {orders.length === 0 && (
-                    <tr><td colSpan={COLS.length + 1} style={{ ...S.td, color: C.dbGray, textAlign: 'center', padding: 24 }}>
-                      No orders found. Use "Seed 100 from Delta" to load sample data.
-                    </td></tr>
-                  )}
-                  {orders.map((row, i) => {
-                    const isEdit = editKey === row.o_orderkey;
-                    return (
-                      <tr key={row.o_orderkey}>
-                        {COLS.map(c => (
-                          <td key={c} style={i % 2 === 0 ? S.td : S.tdEven}>
-                            {isEdit && c !== 'o_orderkey'
-                              ? <input style={S.inlineInput} value={editRow[c] ?? ''}
-                                  onChange={e => setEditRow(v => ({ ...v, [c]: e.target.value }))} />
-                              : <span style={c === 'o_orderstatus' ? { fontWeight: 700, color: row[c] === 'O' ? C.dbGreen : row[c] === 'F' ? C.dbGray : C.dbRed } : {}}>
-                                  {String(row[c] ?? '')}
-                                </span>}
-                          </td>
-                        ))}
-                        <td style={{ ...(i % 2 === 0 ? S.td : S.tdEven), textAlign: 'center', whiteSpace: 'nowrap' }}>
-                          {isEdit
-                            ? <>
-                                <button style={btn({ ...BTN.success, marginRight: 4, padding: '4px 10px', fontSize: 12 })} onClick={saveEdit}>✓ Save</button>
-                                <button style={btn({ ...BTN.neutral, padding: '4px 10px', fontSize: 12 })} onClick={cancelEdit}>✕</button>
-                              </>
-                            : <>
-                                <button style={btn({ ...BTN.outline, marginRight: 4, padding: '4px 10px', fontSize: 12 })} onClick={() => startEdit(row)}>✎ Edit</button>
-                                <button style={btn({ ...BTN.danger, padding: '4px 10px', fontSize: 12 })} onClick={() => deleteOrder(row.o_orderkey)}>✕ Del</button>
-                              </>}
-                        </td>
+            {total === 0 && !loading && (
+              <div style={{ ...S.info, padding: 16, background: C.bg, borderRadius: 8, textAlign: 'center', border: `1px solid ${C.border}` }}>
+                Synced table is empty. Initial backfill from Delta may take 5–30 min after synced table setup.
+              </div>
+            )}
+            {total > 0 && (
+              <>
+                <div style={S.info}>{total} total rows · showing {offset + 1}–{Math.min(offset + LIMIT, total)}</div>
+                <div style={{ overflowX: 'auto', borderRadius: 8, border: `1px solid ${C.border}` }}>
+                  <table style={S.table}>
+                    <thead>
+                      <tr>
+                        {READ_COLS.map(c => <th key={c} style={S.th}>{c.replace('o_', '')}</th>)}
+                        <th style={{ ...S.th, textAlign: 'center' }}>Actions</th>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Pagination */}
-            <div style={S.pager}>
-              <button style={btn({ ...BTN.neutral, padding: '5px 12px' })} disabled={offset === 0}
-                onClick={() => setOffset(v => Math.max(0, v - LIMIT))}>← Prev</button>
-              <span>Page {Math.floor(offset / LIMIT) + 1} of {Math.ceil(total / LIMIT) || 1}</span>
-              <button style={btn({ ...BTN.neutral, padding: '5px 12px' })} disabled={offset + LIMIT >= total}
-                onClick={() => setOffset(v => v + LIMIT)}>Next →</button>
-            </div>
+                    </thead>
+                    <tbody>
+                      {orders.map((row, i) => {
+                        const isEdit = editKey === row.o_orderkey;
+                        return (
+                          <tr key={row.o_orderkey}>
+                            {READ_COLS.map(c => (
+                              <td key={c} style={i % 2 === 0 ? S.td : S.tdEven}>
+                                {isEdit && c !== 'o_orderkey'
+                                  ? <input style={S.inlineInput} value={editRow[c] ?? ''}
+                                      onChange={e => setEditRow(v => ({ ...v, [c]: e.target.value }))} />
+                                  : <span style={c === 'o_orderstatus' ? { fontWeight: 700, color: row[c] === 'O' ? C.dbGreen : row[c] === 'F' ? C.dbGray : C.dbRed } : {}}>
+                                      {String(row[c] ?? '')}
+                                    </span>}
+                              </td>
+                            ))}
+                            <td style={{ ...(i % 2 === 0 ? S.td : S.tdEven), textAlign: 'center', whiteSpace: 'nowrap' }}>
+                              {isEdit
+                                ? <>
+                                    <button style={btn({ ...BTN.success, marginRight: 4, padding: '4px 10px', fontSize: 12 })} onClick={saveEdit}>✓ Queue Update</button>
+                                    <button style={btn({ ...BTN.neutral, padding: '4px 10px', fontSize: 12 })} onClick={cancelEdit}>✕</button>
+                                  </>
+                                : <>
+                                    <button style={btn({ ...BTN.outline, marginRight: 4, padding: '4px 10px', fontSize: 12 })} onClick={() => startEdit(row)}>✎ Edit</button>
+                                    <button style={btn({ ...BTN.danger, padding: '4px 10px', fontSize: 12 })} onClick={() => deleteOrder(row.o_orderkey)}>✕ Del</button>
+                                  </>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={S.pager}>
+                  <button style={btn({ ...BTN.neutral, padding: '5px 12px' })} disabled={offset === 0}
+                    onClick={() => setOffset(v => Math.max(0, v - LIMIT))}>← Prev</button>
+                  <span>Page {Math.floor(offset / LIMIT) + 1} of {Math.ceil(total / LIMIT) || 1}</span>
+                  <button style={btn({ ...BTN.neutral, padding: '5px 12px' })} disabled={offset + LIMIT >= total}
+                    onClick={() => setOffset(v => v + LIMIT)}>Next →</button>
+                </div>
+              </>
+            )}
           </>
         )}
     </div>
@@ -293,9 +309,9 @@ function CustomersSection() {
     <div style={S.section}>
       <div style={S.sectionHead}>
         <div>
-          <h2 style={S.h2}>Customers</h2>
-          <div style={{ fontSize: 12, color: C.dbGray, marginTop: 2 }}>
-            Source: <code>tpch_sync.customer</code> (Lakebase — synced read-only from Delta)
+          <h2 style={S.h2}>Customers <span style={{ fontSize: 13, fontWeight: 400, color: C.dbGray }}>(Synced from Delta)</span></h2>
+          <div style={{ fontSize: 12, color: C.dbGray, marginTop: 3 }}>
+            Source: <code>tpch_sync_as.customer</code> — read-only · continuously synced from Delta
           </div>
         </div>
         <span style={{ ...S.badge, background: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE' }}>
@@ -306,16 +322,16 @@ function CustomersSection() {
       {error && <div style={S.error}>{error}</div>}
 
       {loading
-        ? <p style={S.info}>Loading from Lakebase…</p>
+        ? <p style={S.info}>Loading from synced table…</p>
         : customers.length === 0
-          ? <div style={{ ...S.info, padding: '16px', background: C.bg, borderRadius: 8, textAlign: 'center', border: `1px solid ${C.border}` }}>
-              Synced table is warming up — initial backfill from Delta may take 5–30 min.
+          ? <div style={{ ...S.info, padding: 16, background: C.bg, borderRadius: 8, textAlign: 'center', border: `1px solid ${C.border}` }}>
+              Synced table warming up — initial backfill from Delta may take 5–30 min.
             </div>
           : (
             <div style={{ overflowX: 'auto', borderRadius: 8, border: `1px solid ${C.border}` }}>
               <table style={S.table}>
                 <thead>
-                  <tr>{COLS.map(c => <th key={c} style={S.th}>{c.replace('c_','')}</th>)}</tr>
+                  <tr>{COLS.map(c => <th key={c} style={S.th}>{c.replace('c_', '')}</th>)}</tr>
                 </thead>
                 <tbody>
                   {customers.map((r, i) => (
@@ -506,9 +522,9 @@ export default function App() {
   return (
     <div style={S.page}>
       <div style={S.header}>
-        <h1 style={S.h1}>LakeSync</h1>
+        <h1 style={S.h1}>LakeSync <span style={{ fontSize: 14, fontWeight: 500, color: C.dbGray, marginLeft: 8 }}>Autoscaling</span></h1>
         <p style={{ margin: '6px 0 0', color: C.dbGray, fontSize: 14 }}>
-          Full CRUD on Lakebase Postgres · Synced tables from Delta · Forward ETL every 15 min
+          Reads from synced Delta snapshot · CDC log captures all changes · Forward ETL every 15 min
         </p>
       </div>
       <ArchBanner />

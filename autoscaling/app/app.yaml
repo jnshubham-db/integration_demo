@@ -1,0 +1,17 @@
+command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+resources:
+  - name: lakebase-tpch-as
+    description: "Lakebase Autoscaling for TPC-H demo"
+    postgres:
+      branch: "projects/integration-demo-as/branches/main"
+      database: "tpch-as"
+      permission: CAN_CONNECT_AND_CREATE
+
+env:
+  - name: LAKEBASE_HOST
+    value: ""  # set by deploy_app.py at deploy time
+  - name: LAKEBASE_DB
+    value: "tpch-as"
+  - name: LAKEBASE_ENDPOINT
+    value: "projects/integration-demo-as/branches/main/endpoints/primary"
